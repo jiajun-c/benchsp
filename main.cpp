@@ -14,6 +14,17 @@ struct triplet_matrix {
     std::vector<VT> vals;
 };
 
+bool verify_res(float rtol, float atol, float *res, float *ref_res, int nnz) {
+    for (int i = 0; i < nnz; i++) {
+        float diff = fabsf(res[i] - ref_res[i]);
+        float tol = atol + rtol * fabsf(ref_res[i]);
+        if (diff > tol) {
+            printf("Error: %d %f %f %f\n", i, res[i], ref_res[i], diff);
+            return false; // 任何元素超出容差即返回 false
+        }
+    }
+    return true;
+}
 
 template <typename TRIPLET>
 void read_triplet_file(const std::string& matrix_filename, TRIPLET& triplet, fast_matrix_market::read_options options = {}) {
@@ -26,23 +37,26 @@ void read_triplet_file(const std::string& matrix_filename, TRIPLET& triplet, fas
 int main() {
     triplet_matrix<int64_t, float> triplet;
     read_triplet_file("/staff/chengjiajun/workspace/benchsp/data/bcspwr01/bcspwr01.mtx", triplet);
-    vector<int64_t>counts(triplet.nrows+1);
+    vector<int>counts(triplet.nrows+1, 0);
     int nnz = triplet.vals.size();
-    printf("nnz = %d nrows: %ld  ncols: %ld\n", nnz, triplet.nrows, triplet.ncols);
+    printf("nnz: %d nrows: %ld  ncols: %ld\n", nnz, triplet.nrows, triplet.ncols);
     for (int i = 0; i < triplet.vals.size(); i++) {
-        counts[triplet.rows[i]]++;
+        counts[triplet.rows[i]+1]++;
     }
+
+    // counts
     for (int i = 1; i <= triplet.nrows; i++) {
         counts[i] += counts[i-1];
     }
     vector<float>x(triplet.nrows, 1);
     vector<float>ref_res(triplet.ncols, 0);
-
+    vector<float>cu_res(triplet.ncols, 0);
     ref_spmv(counts.data(), triplet.cols.data(), triplet.vals.data(), x.data(), ref_res.data(), triplet.nrows, triplet.ncols);
-    int sum = 0;
-    for (int i =0; i < triplet.nrows; i++) {
-        sum += ref_res[i];
+    cusparse_spmv(counts.data(), triplet.cols.data(), triplet.vals.data(), x.data(), cu_res.data(), triplet.nrows, triplet.ncols, nnz);
+    if (verify_res(1e-3, 1e-3, ref_res.data(), cu_res.data(), triplet.nrows)) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
     }
-    printf("sum %d\n", sum);
     return 0;
 }

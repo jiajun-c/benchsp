@@ -1,1 +1,2 @@
-void cusparse_spmv(int *A_csrOffsets, int *A_columns, float *A_values, float *x, float* y, int row, int col, int nnz);
+#include <iostream>
+int cusparse_spmv(int *A_csrOffsets, int64_t *A_columns, float *A_values, float *x, float* y, int64_t row, int64_t col, int64_t nnz);
