@@ -23,6 +23,7 @@ add_executable(benchsp
     amgT.cu        # CUDA 源文件
     ref.cpp
     cusparse.cu    # CUDA 源文件
+    smat.cu
 )
 
 target_link_libraries(benchsp ${CUDA_cusparse_LIBRARY} ${CUDA_cublas_LIBRARY}  fast_matrix_market::fast_matrix_market)
