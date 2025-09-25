@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.22)
 project(benchsp CXX CUDA)
 
 include_directories(${PROJECT_SOURCE_DIR}/include) 
+include_directories(/usr/local/cuda-12.4/include) 
+
 include(FetchContent)
 
 find_package(CUDAToolkit REQUIRED)
@@ -16,15 +18,23 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(fast_matrix_market)
 
 set(CMAKE_CUDA_ARCHITECTURES "80")
+file(GLOB_RECURSE mains RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
+file(GLOB_RECURSE SRC_DIR_LIST "src/*.cpp" "src/*.cu" "src/*.c")	#遍历获取source/路径下所有的*.cpp和*.c文件列表
 
+foreach(mainfile IN LISTS mains)
+    # Get file name without directory
+    get_filename_component(mainname ${mainfile} NAME_WE)
+    # add_executable( ${mainfile})
+    add_executable(${mainname}
+    ./utils/utils.hpp
+    ${mainfile}       # C++ 源文件
+    ${SRC_DIR_LIST}
+    )
+    target_link_libraries(${mainname} ${CUDA_cusparse_LIBRARY} ${CUDA_cublas_LIBRARY}  fast_matrix_market::fast_matrix_market)
+    target_compile_options(${mainname} PRIVATE -O3)
+
+endforeach()
 # 创建可执行文件，并添加所有源文件
-add_executable(benchsp
-    main.cpp       # C++ 源文件
-    amgT.cu        # CUDA 源文件
-    ref.cpp
-    cusparse.cu    # CUDA 源文件
-    smat.cu
-)
 
-target_link_libraries(benchsp ${CUDA_cusparse_LIBRARY} ${CUDA_cublas_LIBRARY}  fast_matrix_market::fast_matrix_market)
+
 

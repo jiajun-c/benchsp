@@ -1,0 +1,1 @@
+void smatSpmmfp16(int *rowPtr, int *colIdx, int row, int col, int n, int nnz, float* values, float* outvalues);

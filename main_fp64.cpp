@@ -6,6 +6,7 @@
 #include <fstream>
 #include <vector>
 #include <chrono>
+#include "matrixFormat.hpp"
 using namespace std;
 template <typename IT, typename VT>
 struct triplet_matrix {

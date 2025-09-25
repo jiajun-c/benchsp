@@ -1,6 +1,6 @@
 #include "ref.h"
 
-void ref_spmv(int *A_csrOffsets, int64_t *A_columns, float *A_values, float *x, float* y, int64_t row, int64_t col) {
+void ref_spmv_fp32(int *A_csrOffsets, int64_t *A_columns, float *A_values, float *x, float* y, int64_t row, int64_t col) {
     int base = 0;
     for (int i = 0; i < row; i++) {
         float sum = 0;
