@@ -1,0 +1,3 @@
+void MySpmvWithPre(int *rowPtr, int *colIdx, int rows, int cols, int nnz, float* values,float* x, float* outvalues);
+void MySpmvWithPrefp16(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t cols, int32_t nnz, float* values,float* x, float* outvalues);
+void MySpmvWithPrefp64(int64_t *rowPtr, int64_t *colIdx, int64_t rows, int64_t cols, int64_t nnz, double* values,double* x, double* outvalues);

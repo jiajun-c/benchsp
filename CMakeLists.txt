@@ -8,6 +8,9 @@ include_directories(/usr/local/cuda-12.4/include)
 include(FetchContent)
 
 find_package(CUDAToolkit REQUIRED)
+set(CMAKE_CXX_FLAGS " -O3 -Wall")
+set(NVCC_FLAGS -O3 -Wno-deprecated-gpu-targets -rdc=true)
+
 
 FetchContent_Declare(
         fast_matrix_market

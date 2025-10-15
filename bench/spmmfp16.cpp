@@ -31,7 +31,7 @@ bool verify_res(float rtol, float atol, float *res, float *ref_res, int nnz) {
 template <typename TRIPLET>
 void read_triplet_file(const std::string& matrix_filename, TRIPLET& triplet, fast_matrix_market::read_options options = {}) {
     std::ifstream f( matrix_filename);
-    options.chunk_size_bytes = 1024;
+    options.chunk_size_bytes = 1024*1024;
 
     fast_matrix_market::read_matrix_market_triplet(f, triplet.nrows, triplet.ncols, triplet.rows, triplet.cols, triplet.vals, options);
 }
@@ -58,7 +58,7 @@ int main() {
     
         // auto start = std::chrono::high_resolution_clock::now(); 
         for (int i = 0; i < 10; i++)
-        cusparse_spmm_fp16(counts.data(), triplet.cols.data(), triplet.vals.data(), x.data(), cu_res.data(), triplet.nrows, n, triplet.ncols, nnz);
+        // cusparse_spmv_fp16(counts.data(), triplet.cols.data(), triplet.vals.data(), x.data(), cu_res.data(), triplet.nrows, n, triplet.ncols, nnz);
         // auto end = std::chrono::high_resolution_clock::now(); 
         // auto elapsed = end - start;
         // std::cout << "耗时: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms\n";

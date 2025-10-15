@@ -101,7 +101,7 @@ __global__ void mmaSmatKernelfp16(half *bcsrValuesA, int *bcsrRowPtrA, int *bcsr
     } while (0)
 
 void smatSpmmfp16(int *rowPtr, int *colIdx, int row, int col, int n, int nnz, float* values, float* outvalues) {
-    CSRFormat<half>csr;
+    CSRFormat<half, int32_t>csr;
     csr.rowPtr = rowPtr;
     csr.colIdx = colIdx;
     csr.row = row;
@@ -112,12 +112,12 @@ void smatSpmmfp16(int *rowPtr, int *colIdx, int row, int col, int n, int nnz, fl
     }
     cudaSetDevice(1); 
 
-    BCSRFormat<half>bcsr;
+    BCSRFormat<half, int32_t>bcsr;
     bcsr.TILE_M = 16;
     bcsr.TILE_N = 8;
     bcsr.TILE_K = 16;
     bcsr.nnz = nnz;
-    csrToBcsr<half>(&csr, &bcsr);
+    csrToBcsr<half, int32_t>(&csr, &bcsr);
     // return;
     // for (int i = 0; i < 1; i++) {
     //     printf("bcsr.values %d %f\n", i,  float(bcsr.values[i]));

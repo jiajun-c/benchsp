@@ -2,28 +2,82 @@
 #include <iostream>
 #include <vector>
 
-template <typename T>
+template <typename T, typename Y>
 class CSRFormat {
 public:
-    int* rowPtr;
-    int* colIdx;
+    Y* rowPtr;
+    Y* colIdx;
     T* values;
-    int row, col;
-    int nnz;
+    Y row, col;
+    Y nnz;
 };
 
-template <typename T>
+template <typename T, typename Y>
 class BCSRFormat {
 public:
-    int* bcsrRowPtr;
-    int* bcsrcolIdx;
-    int *relativeBlockIndexMapping;
+    Y* bcsrRowPtr;
+    Y* bcsrcolIdx;
+    Y *relativeBlockIndexMapping;
     T* values;
-    int row, col, blockNum;
+    Y row, col, blockNum;
     int TILE_M;
     int TILE_N;
     int TILE_K;
-    int nnz;
-    int colRegions, rowRegions, nonzeroBlocks, elemCount;
+    Y nnz;
+    Y colRegions, rowRegions, nonzeroBlocks, elemCount;
+    Y block_row;
+    Y block_col;
 };
 
+// template <typename T, typename Y>
+// class bsrMAT
+// {
+//     public:
+//         int row;
+//         int col;
+//         int nnz;
+//         int blc_row;
+//         int blc_col;
+//         int blc_num;
+//         double stand;
+//         double avg_nnz;
+//         T *blcPtr;
+//         T *blcIdx;
+//         Y *blcVal;
+//         unsigned short *blcMap;
+//         T warpnum;       // load-balanced value
+//         T *rowPtrbyWarp; // load-balanced array
+//         T *rowIdxbyWarp; // load-balanced array
+//         float *blcVal_fp32;         // float
+//         float *dVecX_fp32;
+//         float *dVecY_fp32;
+//         uint32_t *blcVal_fp16; // half
+//         uint32_t *dVecX_fp16;
+//         uint32_t *dVecY_fp16;
+// } ;
+
+class bsrMAT
+{
+    public:
+        int row;
+        int col;
+        int nnz;
+        int blc_row;
+        int blc_col;
+        int blc_num;
+        double stand;
+        double avg_nnz;
+        int32_t *blcPtr;
+        int32_t *blcIdx;
+        double *blcVal;
+        unsigned short *blcMap;
+        int32_t warpnum;       // load-balanced value
+        int32_t *rowPtrbyWarp; // load-balanced array
+        int32_t *rowIdxbyWarp; // load-balanced array
+        float *blcVal_fp32;         // float
+        float *dVecX_fp32;
+        float *dVecY_fp32;
+        uint32_t *blcVal_fp16; // half
+        uint32_t *dVecX_fp16;
+        uint32_t *dVecY_fp16;
+} ;
