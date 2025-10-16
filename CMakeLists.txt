@@ -9,7 +9,7 @@ include(FetchContent)
 
 find_package(CUDAToolkit REQUIRED)
 set(CMAKE_CXX_FLAGS " -O3 -Wall")
-set(NVCC_FLAGS -O3 -Wno-deprecated-gpu-targets -rdc=true)
+set(NVCC_FLAGS  -O3 -ccbin /usr/bin/gcc -m64 -gencode arch=compute_80,code=sm_80)
 
 
 FetchContent_Declare(
@@ -34,7 +34,7 @@ foreach(mainfile IN LISTS mains)
     ${SRC_DIR_LIST}
     )
     target_link_libraries(${mainname} ${CUDA_cusparse_LIBRARY} ${CUDA_cublas_LIBRARY}  fast_matrix_market::fast_matrix_market)
-    target_compile_options(${mainname} PRIVATE -O3)
+    target_compile_options(${mainname} PRIVATE -O3  $<$<COMPILE_LANGUAGE:CUDA>:${NVCC_FLAGS}>)
 
 endforeach()
 # 创建可执行文件，并添加所有源文件

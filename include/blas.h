@@ -1,0 +1,1 @@
+int gemvfp64(double *A, double *B, double *C, int M, int N, int K, int repeat);

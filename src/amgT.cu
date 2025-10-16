@@ -858,13 +858,13 @@ void CSR2BSR_step2(MAT_PTR_TYPE *d_bsrptr, int brow)
     MAT_PTR_TYPE *h_bsrptr;
     h_bsrptr = (MAT_PTR_TYPE *)malloc(sizeof(MAT_PTR_TYPE) * (brow + 1));
     cudaMemcpy(h_bsrptr, d_bsrptr, sizeof(MAT_PTR_TYPE) * (brow + 1), cudaMemcpyDeviceToHost);
-    for (int i = 1; i < brow; i++) {
-        int count = h_bsrptr[i] - h_bsrptr[i - 1];
-        if (count > 64) {
-            printf("count: %d\n", count);
-        }
-        // printf("%d\n", h_bsrptr[i] - h_bsrptr[i - 1]);
-    }
+    // for (int i = 1; i < brow; i++) {
+    //     int count = h_bsrptr[i] - h_bsrptr[i - 1];
+    //     if (count > 16) {
+    //         printf("count: %d\n", count);
+    //     }
+    //     // printf("%d\n", h_bsrptr[i] - h_bsrptr[i - 1]);
+    // }
     cudaDeviceSynchronize();
 }
 
@@ -1036,7 +1036,6 @@ void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
 
         get_rowPtrbyWarp<<<BlockNum, ThreadNum>>>(bsrmat->blcPtr, bsrmat->rowPtrbyWarp, bsrmat->blc_row);
         cudaDeviceSynchronize();
-        printf("bsrmat->blc_row = %d\n", bsrmat->blc_row);
         thrust::exclusive_scan(thrust::device, bsrmat->rowPtrbyWarp, bsrmat->rowPtrbyWarp + bsrmat->blc_row + 1, bsrmat->rowPtrbyWarp, 0);
         cudaDeviceSynchronize();
 
@@ -1051,6 +1050,7 @@ void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
 int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_values, double *hX, double* hY, int32_t A_num_rows, int32_t A_num_cols, int32_t A_nnz, int repeat)
 {
     bsrMAT bsrmat;
+    printf("=== block matrix info ====\n");
 
     CSR2BSR_GPU(&bsrmat, hA_csrOffsets, hA_columns, hA_values, hX, hY, A_num_rows, A_num_cols, A_nnz);
     BSR_BALANCED_PREPROCESS_GPU(&bsrmat);
@@ -1078,9 +1078,15 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     double avgnz = bsrmat.avg_nnz;
     double alpha = 1.0;
     // for (int i = 0; i < repeat; i++) {
-    auto start = std::chrono::steady_clock::now();
     printf("stand = %f avgnz = %f\n", stand, avgnz);
-    // for (int i = 0; i < repeat; i++) {
+    printf("blc_row = %d\n", bsrmat.blc_row);
+    printf("blc_col = %d\n", bsrmat.blc_col);
+    printf("blc_num = %d\n", bsrmat.blc_num);
+    printf("=== block matrix end ====\n");
+
+    for (int i = 0; i < repeat; i++) {
+    auto start = std::chrono::steady_clock::now();
+
 #ifdef ADAPTIVE_AMGT_SPMV
     if (stand >= 12 && avgnz >= 10)
     {
@@ -1121,9 +1127,11 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     cudaDeviceSynchronize();
     auto end = std::chrono::steady_clock::now();
     auto elapsed = end - start;
-    std::cout << "amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n\n";
-    // }
+    std::cout << "amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+    }
     cudaMemcpy(hY, dvecY, sizeof(MAT_VAL_TYPE) * bsrmat.row, cudaMemcpyDeviceToHost);
+    cudaFree(dvecX);
+    cudaFree(dvecY);
     cudaDeviceSynchronize();
     return 0;
 }

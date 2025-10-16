@@ -63,6 +63,7 @@ int main() {
     // end = std::chrono::high_resolution_clock::now(); 
     // elapsed = end - start;
     // std::cout << "耗时: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms\n";
+
     if (verify_res(1e-3, 1e-3, ref_res.data(), cu_res.data(), triplet.nrows)) {
         printf("PASS\n");
     } else {

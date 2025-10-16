@@ -157,9 +157,10 @@ int cusparse_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_v
         //                              CUSPARSE_SPMV_ALG_DEFAULT, dBuffer) )
 
         // execute SpMV
-        CHECK_CUSPARSE( cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+        // CHECK_CUSPARSE( 
+        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                     &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
-                                    CUSPARSE_SPMV_ALG_DEFAULT, dBuffer) )
+                                    CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
         cudaDeviceSynchronize();
         auto end = std::chrono::high_resolution_clock::now(); 
         auto elapsed = end - start;

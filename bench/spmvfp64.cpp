@@ -5,10 +5,12 @@
 
 #include <iostream>
 #include "cusp.h"
+#include "blas.h"
 #include <fstream>
 #include "spmv.h"
 #include <vector>
 #include <chrono>
+#include "dasp.h"
 #include <algorithm>
 using namespace std;
 template <typename IT, typename VT>
@@ -96,13 +98,8 @@ int main(int argc, char **argv) {
     double *cu_res = (double *)malloc(triplet.ncols * sizeof(double));
     memset(ref_res, 0, triplet.ncols * sizeof(double));
     memset(cu_res, 0, triplet.ncols * sizeof(double));
-    // MySpmvWithPre(counts.data(), triplet.cols.data(), triplet.nrows, triplet.ncols, nnz,triplet.vals.data(), x.data(), cu_res.data());
     int32_t *cols = (int32_t *)malloc(nnz * sizeof(int32_t));
     memcpy(cols, triplet.cols.data(), nnz * sizeof(int32_t));
-    // for (int i = 0; i < nnz; i++) {
-    //     printf("cols[%d]: %d\n", i, triplet.cols[i]);
-    // }
-    // auto start = std::chrono::high_resolution_clock::now(); 
     double *vals = (double *)malloc(nnz * sizeof(double));
     memcpy(vals, triplet.vals.data(), nnz * sizeof(double));
 
@@ -114,27 +111,31 @@ int main(int argc, char **argv) {
     // double *ref_cures;
     // cudaMalloc((void**)&ref_cures, triplet.nrows * sizeof(double));
     // cudaMemset(ref_cures, 0.0,  triplet.nrows * sizeof(double));
-    for (int i = 0; i < repeat; i++)
-    cusparse_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, nnz, 1);
+    for (int i = 0; i < 1; i++)
+    cusparse_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, nnz, repeat);
     // cudaMemcpy(ref_res, ref_cures, triplet.nrows * sizeof(double), cudaMemcpyDeviceToHost);
     // auto end = std::chrono::high_resolution_clock::now(); 
     // auto elapsed = end - start;
     // std::cout << "耗时: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms\n";
     // bcsr_spmv_fp64(counts, cols, vals, x,cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
-    printf("amgT spmv\n");
-    // MySpmvWithPrefp64(counts, cols,  triplet.nrows, triplet.ncols, nnz, vals, x, cu_res);
-    for (int i = 0; i < repeat; i++)
-    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, 1);
-    // auto start = std::chrono::high_resolution_clock::now(); 
-    // for (int i = 0; i < repeat; i++)
-    // cusparse_spmv_fp64(count64, cols64, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, 1);
-    // auto end = std::chrono::high_resolution_clock::now(); 
-    // auto elapsed = end - start;
-    // std::cout << "耗时: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms\n";
-    if (verify_res(1e-3, 1e-3, cu_res,ref_res, triplet.nrows)) {
-        printf("PASS\n");
-    } else {
-        printf("FAIL\n");
-    }
+    // printf("amgT spmv\n");
+    int *new_order = (int *)malloc(sizeof(int) * triplet.nrows);
+    for (int i = 0; i < 1; i++)
+    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
+
+    spmv_all("filename", vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
+
+    // double *dense_a;
+    // dense_a = (double *)malloc(triplet.nrows * triplet.ncols * sizeof(double));
+    // memset(dense_a, 0, triplet.nrows * triplet.ncols * sizeof(double));
+    // for (int i = 0; i < nnz; i++) {
+    //     dense_a[triplet.rows[i] * triplet.ncols + triplet.cols[i]] = triplet.vals[i];
+    // }
+    // gemvfp64(dense_a, x, cu_res, triplet.nrows, triplet.ncols, 1, repeat);
+    // if (verify_res(1e-3, 1e-3, cu_res,ref_res, triplet.nrows)) {
+    //     printf("PASS\n");
+    // } else {
+    //     printf("FAIL\n");
+    // }
     // return 0;
 }
