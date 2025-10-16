@@ -6,6 +6,7 @@
 #include <cooperative_groups.h>
 #include <cuda/pipeline>
 #include <cooperative_groups/memcpy_async.h>
+#include "utils.h"
 #define ADAPTIVE_AMGT_SPMV
 #define MASK_SIZE 256
 #define WARP_SIZE 32
@@ -18,20 +19,7 @@
 #define setbit(x, y) x |= (1 << y)    // set the yth bit of x is 1
 #define clrbit(x, y) x &= ~(1 << y)   // set the yth bit of x is 0
 #define getbit(x, y) ((x) >> (y) & 1) // get the yth bit of x
-#define CHECK(call)                                                             \
-do                                                                              \
-{                                                                               \
-    const cudaError_t error_code = call;                                        \
-    if (error_code != cudaSuccess)                                              \
-    {                                                                           \
-        printf("CUDA Error:\n");                                                \
-        printf("     File:      %s\n", __FILE__);                               \
-        printf("     Line       %d:\n", __LINE__);                              \
-        printf("     Error code:%d\n", error_code);                             \
-        printf("     Error text:%s\n", cudaGetErrorString(error_code));         \
-        exit(1);                                                                \
-    }                                                                           \
-}while(0)    
+
 #define MAT_VAL_TYPE double
 #define MAT_PTR_TYPE int
 #define MAT_IDX_TYPE int
@@ -168,20 +156,20 @@ __global__ void bsr_spmv_balanced_cc_fp64(int *rowPtrbyWarp, int *rowIdxbyWarp, 
     int end = start + WARP_CAPACITY < d_blcPtr[blc_rid + 1] ? start + WARP_CAPACITY : d_blcPtr[blc_rid + 1];
 
     MAT_VAL_TYPE res = 0;
-
+    // int read_count = 0, write_count = 0;
     for (int i = start + groupid; i < end; i += 8)
     {
         MAT_VAL_TYPE *cur_val = d_blcVal + i * BSR_NNZ;
         MAT_MAP_TYPE mapA = d_blcMap[i];
-
         int offset_b = d_blcCid[i] * BSR_N;
-
+        // read_count++;
         for (int c = 0; c < BSR_N; c++)
         {
             int idx = tid_in_group * BSR_N + c;
 
             if (getbit(mapA, idx))
             {
+                // read_count += 2;
                 res += cur_val[idx] * d_x[offset_b + c];
             }
         }
@@ -196,6 +184,9 @@ __global__ void bsr_spmv_balanced_cc_fp64(int *rowPtrbyWarp, int *rowIdxbyWarp, 
     {
         atomicAdd(&d_y[blc_rid * BSR_M + laneid], res * alpha);
     }
+    // if (tid < 100) {
+    // printf("tid:%d %d\n", tid, read_count);
+    // }
 }
 __global__ void bsr_spmv_tc_fp64(MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid, MAT_VAL_TYPE *d_blcVal,
                                  MAT_VAL_TYPE *d_x, MAT_VAL_TYPE *d_y,
@@ -991,7 +982,7 @@ void CSR2BSR_GPU(bsrMAT *bsrmat, int32_t *hA_csrOffsets, int32_t *hA_columns, do
         cudaMemcpy(&(bsrmat->blc_num), &bsrmat->blcPtr[bsrmat->blc_row], sizeof(MAT_PTR_TYPE), cudaMemcpyDeviceToHost);
         bsrmat->nnz = bsrmat->blc_num * BSR_M * BSR_N;
         bsrmat->avg_nnz = (double)A_nnz/ (double)(bsrmat->blc_num);
-
+        printf("avg_nnz: %f\n",bsrmat->avg_nnz );
         HYPRE_Real *result_gpu;
         cudaMalloc((void **)&result_gpu, sizeof(HYPRE_Real));
         cudaMemset(result_gpu, 0.0, sizeof(HYPRE_Real));

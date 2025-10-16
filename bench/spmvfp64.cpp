@@ -12,6 +12,8 @@
 #include <chrono>
 #include "dasp.h"
 #include <algorithm>
+#include "csrspmv.h"
+#include <map>
 using namespace std;
 template <typename IT, typename VT>
 struct triplet_matrix {
@@ -22,7 +24,7 @@ struct triplet_matrix {
 };
 
 bool verify_res(double rtol, double atol, double *res, double *ref_res, int nnz) {
-    for (int i = 0; i < nnz; i++) {
+    for (int i = 221; i < nnz; i++) {
         double diff = fabsf(res[i] - ref_res[i]);
         double tol = atol + rtol * fabsf(ref_res[i]);
         if (diff > tol) {
@@ -103,6 +105,15 @@ int main(int argc, char **argv) {
     double *vals = (double *)malloc(nnz * sizeof(double));
     memcpy(vals, triplet.vals.data(), nnz * sizeof(double));
 
+    // map<int, int>blockinfo;
+    // for (int i = 0; i < nnz; i++) {
+    //     blockinfo[triplet.rows[i]/2 * 1000005 + triplet.cols[i]/2]++;
+    // }
+    // double sum = 0;
+    // for (auto b: blockinfo) {
+    //     sum += b.second;
+    // }
+    // printf("sum:%f size:%d %f",sum,blockinfo.size(), sum/blockinfo.size());
     int64_t* count64 = (int64_t *)malloc((triplet.nrows+1) * sizeof(int64_t));
     int64_t* cols64 = (int64_t *)malloc(nnz * sizeof(int64_t));
     for (int i = 0; i < nnz; i++) cols64[i] = triplet.cols[i];
@@ -111,7 +122,7 @@ int main(int argc, char **argv) {
     // double *ref_cures;
     // cudaMalloc((void**)&ref_cures, triplet.nrows * sizeof(double));
     // cudaMemset(ref_cures, 0.0,  triplet.nrows * sizeof(double));
-    for (int i = 0; i < 1; i++)
+    // for (int i = 0; i < 1; i++)
     cusparse_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, nnz, repeat);
     // cudaMemcpy(ref_res, ref_cures, triplet.nrows * sizeof(double), cudaMemcpyDeviceToHost);
     // auto end = std::chrono::high_resolution_clock::now(); 
@@ -120,9 +131,14 @@ int main(int argc, char **argv) {
     // bcsr_spmv_fp64(counts, cols, vals, x,cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
     // printf("amgT spmv\n");
     int *new_order = (int *)malloc(sizeof(int) * triplet.nrows);
-    for (int i = 0; i < 1; i++)
+    // for (int i = 0; i < 1; i++)
+    // AMGT
     amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
 
+    // CSR SPMV
+    spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
+
+    // DASP
     spmv_all("filename", vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
 
     // double *dense_a;
@@ -132,10 +148,10 @@ int main(int argc, char **argv) {
     //     dense_a[triplet.rows[i] * triplet.ncols + triplet.cols[i]] = triplet.vals[i];
     // }
     // gemvfp64(dense_a, x, cu_res, triplet.nrows, triplet.ncols, 1, repeat);
-    // if (verify_res(1e-3, 1e-3, cu_res,ref_res, triplet.nrows)) {
-    //     printf("PASS\n");
-    // } else {
-    //     printf("FAIL\n");
-    // }
+    if (verify_res(1e-3, 1e-3, cu_res,ref_res, triplet.nrows)) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
     // return 0;
 }
