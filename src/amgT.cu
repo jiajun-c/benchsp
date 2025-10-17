@@ -147,7 +147,7 @@ __global__ void bsr_spmv_balanced_cc_fp64(int *rowPtrbyWarp, int *rowIdxbyWarp, 
     int laneid = tid & (WARP_SIZE - 1);
     int groupid = laneid >> 2;
     int tid_in_group = laneid & 3;
-
+    // warp_num = 357588/64;
     if (warpid >= warp_num)
         return;
     int blc_rid = rowIdxbyWarp[warpid];
@@ -169,7 +169,6 @@ __global__ void bsr_spmv_balanced_cc_fp64(int *rowPtrbyWarp, int *rowIdxbyWarp, 
 
             if (getbit(mapA, idx))
             {
-                // read_count += 2;
                 res += cur_val[idx] * d_x[offset_b + c];
             }
         }
@@ -301,6 +300,67 @@ __global__ void bsr_spmv_cc_fp64(MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid,
         d_y[blc_rid * BSR_M + laneid] += alpha * res;
     }
 }
+
+__global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyWarp, int warp_num,
+                                          MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid, MAT_VAL_TYPE *d_blcVal,
+                                          MAT_VAL_TYPE *d_x, MAT_VAL_TYPE *d_y, int blc_row, int blc_col, int row, int col,
+                                          MAT_VAL_TYPE alpha)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int warpid = tid >> 5;
+    int laneid = tid & (WARP_SIZE - 1);
+
+    if (warpid >= warp_num)
+        return;
+
+    int blc_rid = rowIdxbyWarp[warpid];
+
+    int start = d_blcPtr[blc_rid] + (warpid - rowPtrbyWarp[blc_rid]) * WARP_CAPACITY;
+    int end = start + WARP_CAPACITY < d_blcPtr[blc_rid + 1] ? start + WARP_CAPACITY : d_blcPtr[blc_rid + 1];
+
+    MAT_VAL_TYPE fragA, fragB, fragC[2] = {0};
+    for (int i = start; i < end; i += 2)
+    {
+        MAT_VAL_TYPE *cur_val = d_blcVal + i * BSR_NNZ;
+        fragA = (i + 1 >= end && laneid >= 16) ? 0 : cur_val[laneid];
+        MAT_IDX_TYPE *cur_idx = d_blcCid + i * BSR_NNZ ;
+        fragB = (i + 1 >= end && laneid >= 16) ? 0 : d_x[cur_idx[laneid]];
+
+        mma_m8n8k4(fragC, fragA, fragB);
+    }
+
+    fragC[0] += __shfl_down_sync(0xffffffff, fragC[0], 18, 32);
+    fragC[1] += __shfl_down_sync(0xffffffff, fragC[1], 18, 32);
+    // if (blc_rid*4 >= 220) {
+    //     printf("err\n");
+    // }
+    if (laneid == 0)
+    {
+        int rowid = blc_rid * 4;
+        if (rowid < row)
+            atomicAdd(&d_y[rowid], fragC[0] * alpha);
+    }
+    if (laneid == 4)
+    {
+        int rowid = blc_rid * 4 + 1;
+        if (rowid < row)
+            atomicAdd(&d_y[rowid], fragC[1] * alpha);
+    }
+    if (laneid == 9)
+    {
+        int rowid = blc_rid * 4 + 2;
+        if (rowid < row)
+            atomicAdd(&d_y[rowid], fragC[0] * alpha);
+    }
+    if (laneid == 13)
+    {
+        int rowid = blc_rid * 4 + 3;
+        if (rowid < row)
+            atomicAdd(&d_y[rowid], fragC[1] * alpha);
+    }
+}
+
+
 __global__ void bsr_spmv_balanced_tc_fp64(int *rowPtrbyWarp, int *rowIdxbyWarp, int warp_num,
                                           MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid, MAT_VAL_TYPE *d_blcVal,
                                           MAT_VAL_TYPE *d_x, MAT_VAL_TYPE *d_y, int blc_row, int blc_col, int row, int col,
@@ -1013,12 +1073,13 @@ void CSR2BSR_GPU(bsrMAT *bsrmat, int32_t *hA_csrOffsets, int32_t *hA_columns, do
 
 void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
 {
+    // bsrmat->stand = 12;
 #ifdef ADAPTIVE_AMGT_SPMV
     if (bsrmat->stand >= 12)
 #endif
     {
         // load balanced preprocess
-        // printf("load balanced preprocess\n");
+        printf("load balanced preprocess\n");
         cudaMalloc((void **)&bsrmat->rowPtrbyWarp, sizeof(MAT_PTR_TYPE) * (bsrmat->blc_row + 1));
         cudaMemset(bsrmat->rowPtrbyWarp, 0, sizeof(MAT_PTR_TYPE) * (bsrmat->blc_row + 1));
 
@@ -1038,6 +1099,61 @@ void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
         cudaDeviceSynchronize();
     }
 }
+
+int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
+    dbsrMat d_dbsr;
+    double *dX, *dY;
+    cudaMalloc((void **)&dX, sizeof(double) * dbsr->row);
+    cudaMalloc((void **)&dY, sizeof(double) * dbsr->row);
+    cudaMalloc((void **)&d_dbsr.blcPtr, sizeof(int) * (dbsr->blc_row + 1));
+    cudaMalloc((void **)&d_dbsr.colIdx, sizeof(int) * dbsr->blocknnz);
+    cudaMalloc((void **)&d_dbsr.blcVal, sizeof(double) * dbsr->blocknnz);
+    cudaMemcpy(d_dbsr.blcPtr, dbsr->blcPtr, sizeof(int) * (dbsr->blc_row + 1), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dbsr.colIdx, dbsr->colIdx, sizeof(int) * dbsr->blocknnz, cudaMemcpyHostToDevice);
+    for (int i = 0; i < dbsr->blocknnz; i++) {
+        if (dbsr->colIdx[i] >= 5300) {
+            printf("colIdx[%d] = %d\n", i, dbsr->colIdx[i]);
+        }
+    }
+
+    cudaMemcpy(d_dbsr.blcVal, dbsr->blcVal, sizeof(double) * dbsr->blocknnz, cudaMemcpyHostToDevice);
+    cudaMemcpy(dX, hX, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
+    cudaMemcpy(dY, hY, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
+
+    d_dbsr.blc_row = dbsr->blc_row;
+    printf("load balanced preprocess\n");
+    cudaMalloc((void **)&d_dbsr.rowPtrbyWarp, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
+    cudaMemset(d_dbsr.rowPtrbyWarp, 0, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
+    int ThreadNum = WARP_SIZE * WARP_NUM_SPMV;
+    int BlockNum = (d_dbsr.blc_row + ThreadNum - 1) / ThreadNum;
+
+    get_rowPtrbyWarp<<<BlockNum, ThreadNum>>>(d_dbsr.blcPtr, d_dbsr.rowPtrbyWarp, d_dbsr.blc_row);
+    cudaDeviceSynchronize();
+    thrust::exclusive_scan(thrust::device, d_dbsr.rowPtrbyWarp, d_dbsr.rowPtrbyWarp + d_dbsr.blc_row + 1, d_dbsr.rowPtrbyWarp, 0);
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(&d_dbsr.warpnum, (d_dbsr.rowPtrbyWarp) + d_dbsr.blc_row, sizeof(MAT_PTR_TYPE), cudaMemcpyDeviceToHost);
+    printf("d_dbsr warpnum = %d\n", d_dbsr.warpnum);
+    cudaMalloc((void **)&d_dbsr.rowIdxbyWarp, sizeof(int) * d_dbsr.warpnum);
+    double alpha = 1.0;
+    int BlockNum_b = (d_dbsr.warpnum + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
+
+    get_rowIdxbyWarp<<<BlockNum, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.blc_row);
+    for (int i = 0; i < repeat; i++) {
+        auto start = std::chrono::steady_clock::now();
+        bsr_spmv_balanced_tc_fp64_dbsr<<<BlockNum_b, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
+        
+        cudaDeviceSynchronize();
+        auto end = std::chrono::steady_clock::now();
+        auto elapsed = end - start;
+        std::cout << "dbsr amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+    }
+    cudaMemcpy(hY, dY, sizeof(double) * dbsr->row, cudaMemcpyDeviceToHost);
+    CHECK(cudaGetLastError());
+    cudaDeviceSynchronize();
+    return 0;
+}
+
 int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_values, double *hX, double* hY, int32_t A_num_rows, int32_t A_num_cols, int32_t A_nnz, int repeat)
 {
     bsrMAT bsrmat;
@@ -1047,7 +1163,7 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     BSR_BALANCED_PREPROCESS_GPU(&bsrmat);
     // return 0;
 
-    // printf("bsrmat->warpnum = %d blc_num %d\n", bsrmat.warpnum, bsrmat.blc_num);
+    printf("bsrmat->warpnum = %d blc_num %d\n", bsrmat.warpnum, bsrmat.blc_num);
     MAT_VAL_TYPE *dvecX;
     MAT_VAL_TYPE *dvecY;
     cudaMalloc((void **)&dvecX, sizeof(MAT_VAL_TYPE) *bsrmat.col);
@@ -1057,7 +1173,7 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     int ThreadNum = WARP_SIZE * WARP_NUM_SPMV;
     int BlockNum_b = (bsrmat.warpnum + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
     int BlockNum = (bsrmat.blc_row + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
-    int BlockNum2 = (bsrmat.row + ThreadNum - 1) / ThreadNum;
+    // int BlockNum2 = (bsrmat.row + ThreadNum - 1) / ThreadNum;
     // printf("ThreadNum = %d BlockNum = %d BlockNum_b:%d BlockNum2 = %d\n", ThreadNum, BlockNum, BlockNum_b, BlockNum2);
     // if (beta != 1)
     // {
@@ -1077,7 +1193,7 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
 
     for (int i = 0; i < repeat; i++) {
     auto start = std::chrono::steady_clock::now();
-
+    // stand = 12;
 #ifdef ADAPTIVE_AMGT_SPMV
     if (stand >= 12 && avgnz >= 10)
     {

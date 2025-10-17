@@ -2,7 +2,6 @@
 #include "ref.h"
 #include "bcsr.h"
 #include "fast_matrix_market/fast_matrix_market.hpp"
-
 #include <iostream>
 #include "cusp.h"
 #include "blas.h"
@@ -11,9 +10,8 @@
 #include <vector>
 #include <chrono>
 #include "dasp.h"
-#include <algorithm>
+#include "dbsr.h"
 #include "csrspmv.h"
-#include <map>
 using namespace std;
 template <typename IT, typename VT>
 struct triplet_matrix {
@@ -42,7 +40,11 @@ void read_triplet_file(const std::string& matrix_filename, TRIPLET& triplet, fas
 
     fast_matrix_market::read_matrix_market_triplet(f, triplet.nrows, triplet.ncols, triplet.rows, triplet.cols, triplet.vals, options);
 }
-
+struct elem {
+    int32_t row;
+    int32_t col;
+    double val;
+};
 int main(int argc, char **argv) {
     triplet_matrix<int32_t, double> triplet;
         std::string file_path = argv[1];
@@ -59,33 +61,39 @@ int main(int argc, char **argv) {
     // fast_matrix_market::read_matrix_market_eigen(ifs, mat);
     int32_t nnz = triplet.vals.size();
     // printf("nnz: %d nrows: %ld  ncols: %ld\n", nnz, triplet.nrows, triplet.ncols);
-    vector<vector<int32_t>> datas;
+    vector<elem> datas;
     for (int i = 0; i < nnz; i++) {
-        datas.push_back(vector<int32_t>{triplet.rows[i], triplet.cols[i], triplet.vals[i]});
+        datas.push_back(elem{triplet.rows[i], triplet.cols[i], triplet.vals[i]});
     }
-    sort(datas.begin(), datas.end(), [](const vector<int32_t>& a, const vector<int32_t>& b) {
-        if (a[0] == b[0]) {
-            return a[1] < b[1];
+    sort(datas.begin(), datas.end(), [](const elem& a, const elem& b) {
+        if (a.row == b.row) {
+            return a.col < b.col;
         }
-        return a[0] < b[0];
+        return a.row < b.row;
     });
     for (int i = 0; i < nnz; i++) {
-        triplet.rows[i] = datas[i][0];
-        triplet.cols[i] = datas[i][1];
-        triplet.vals[i] = datas[i][2];
+        triplet.rows[i] = datas[i].row;
+        triplet.cols[i] = datas[i].col;
+        triplet.vals[i] = datas[i].val;
     }
-    for (int i = 0; i < triplet.vals.size(); i++) {
+    for (unsigned int i = 0; i < triplet.vals.size(); i++) {
         counts[triplet.rows[i]+1]++;
     }
-    // for (int i = 0; i < 2; i++) {
-    //     printf("counts[%d]: %d\n", i, counts[i]);
-    // }
-    // counts
+
     for (int i = 1; i <= triplet.nrows; i++) {
         counts[i] += counts[i-1];
     }
+
+    CSRFormat<double, int32_t> csr;
+    csr.col = triplet.ncols;
+    csr.row = triplet.nrows;
+    csr.nnz = nnz;
+    csr.rowPtr = counts;
+    csr.colIdx = triplet.cols.data();
+    csr.values = triplet.vals.data();
+    dbsrMat dbsr;
+    csrTodbsr(&csr, &dbsr);
     double *x = (double *)malloc(triplet.nrows * sizeof(double));
-    // vector<double>x(triplet.nrows, 1);
     for (int i = 0;i  < triplet.nrows; i++) {
         if (i%4) {
             x[i] = 1.0;
@@ -94,8 +102,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // vector<double>ref_res(triplet.ncols, 0);
-    // vector<double>cu_res(triplet.ncols, 0);
     double *ref_res = (double *)malloc(triplet.ncols * sizeof(double));
     double *cu_res = (double *)malloc(triplet.ncols * sizeof(double));
     memset(ref_res, 0, triplet.ncols * sizeof(double));
@@ -131,15 +137,19 @@ int main(int argc, char **argv) {
     // bcsr_spmv_fp64(counts, cols, vals, x,cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
     // printf("amgT spmv\n");
     int *new_order = (int *)malloc(sizeof(int) * triplet.nrows);
-    // for (int i = 0; i < 1; i++)
+
     // AMGT
-    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
+    // amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
 
-    // CSR SPMV
-    spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
+    // DBSR
+    amgT_spmv_fp64_dbsr(&dbsr, x, cu_res, repeat); 
 
-    // DASP
-    spmv_all("filename", vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
+    // // CSR SPMV
+    // spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
+
+    // // // DASP
+    // char filename[10];
+    // spmv_all(filename, vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
 
     // double *dense_a;
     // dense_a = (double *)malloc(triplet.nrows * triplet.ncols * sizeof(double));

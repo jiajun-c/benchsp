@@ -81,3 +81,24 @@ class bsrMAT
         uint32_t *dVecX_fp16;
         uint32_t *dVecY_fp16;
 } ;
+
+
+class dbsrMat {
+    public:
+        int row;
+        int col;
+        int nnz;
+        int blc_row;
+        int blc_col;
+        int blc_num;
+        double stand;
+        double avg_nnz;
+        int32_t *blcPtr;
+        int32_t *colIdx;
+        double *blcVal;
+        unsigned short *blcMap;
+        int32_t blocknnz;
+        int32_t warpnum;       // load-balanced value
+        int32_t *rowPtrbyWarp; // load-balanced array
+        int32_t *rowIdxbyWarp; // load-balanced array
+};
