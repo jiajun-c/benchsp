@@ -324,8 +324,14 @@ __global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyW
         MAT_VAL_TYPE *cur_val = d_blcVal + i * BSR_NNZ;
         fragA = (i + 1 >= end && laneid >= 16) ? 0 : cur_val[laneid];
         MAT_IDX_TYPE *cur_idx = d_blcCid + i * BSR_NNZ ;
+        // if (i+1< end) {
+        //     if (cur_idx[laneid] < 0) {
+        //         printf("err\n");
+        //     }
+        // }
+        // fragA = 1.0;
         fragB = (i + 1 >= end && laneid >= 16) ? 0 : d_x[cur_idx[laneid]];
-
+        fragB = 1.0;
         mma_m8n8k4(fragC, fragA, fragB);
     }
 
@@ -337,8 +343,9 @@ __global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyW
     if (laneid == 0)
     {
         int rowid = blc_rid * 4;
-        if (rowid < row)
+        if (rowid < row) {
             atomicAdd(&d_y[rowid], fragC[0] * alpha);
+        }
     }
     if (laneid == 4)
     {
@@ -1103,21 +1110,24 @@ void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
 int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     dbsrMat d_dbsr;
     double *dX, *dY;
-    cudaMalloc((void **)&dX, sizeof(double) * dbsr->row);
+    d_dbsr.col = dbsr->col;
+    d_dbsr.row = dbsr->row;
+    // d_dbsr.nn
+    cudaMalloc((void **)&dX, sizeof(double) * dbsr->col);
     cudaMalloc((void **)&dY, sizeof(double) * dbsr->row);
     cudaMalloc((void **)&d_dbsr.blcPtr, sizeof(int) * (dbsr->blc_row + 1));
     cudaMalloc((void **)&d_dbsr.colIdx, sizeof(int) * dbsr->blocknnz);
     cudaMalloc((void **)&d_dbsr.blcVal, sizeof(double) * dbsr->blocknnz);
     cudaMemcpy(d_dbsr.blcPtr, dbsr->blcPtr, sizeof(int) * (dbsr->blc_row + 1), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dbsr.colIdx, dbsr->colIdx, sizeof(int) * dbsr->blocknnz, cudaMemcpyHostToDevice);
-    for (int i = 0; i < dbsr->blocknnz; i++) {
-        if (dbsr->colIdx[i] >= 5300) {
-            printf("colIdx[%d] = %d\n", i, dbsr->colIdx[i]);
-        }
-    }
+    // for (int i = 0; i < dbsr->blocknnz; i++) {
+    //     if (dbsr->colIdx[i] >= 5300) {
+    //         printf("colIdx[%d] = %d\n", i, dbsr->colIdx[i]);
+    //     }
+    // }
 
     cudaMemcpy(d_dbsr.blcVal, dbsr->blcVal, sizeof(double) * dbsr->blocknnz, cudaMemcpyHostToDevice);
-    cudaMemcpy(dX, hX, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
+    cudaMemcpy(dX, hX, sizeof(double) * dbsr->col, cudaMemcpyHostToDevice);
     cudaMemcpy(dY, hY, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
 
     d_dbsr.blc_row = dbsr->blc_row;
@@ -1133,12 +1143,16 @@ int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     cudaDeviceSynchronize();
 
     cudaMemcpy(&d_dbsr.warpnum, (d_dbsr.rowPtrbyWarp) + d_dbsr.blc_row, sizeof(MAT_PTR_TYPE), cudaMemcpyDeviceToHost);
-    printf("d_dbsr warpnum = %d\n", d_dbsr.warpnum);
+
     cudaMalloc((void **)&d_dbsr.rowIdxbyWarp, sizeof(int) * d_dbsr.warpnum);
     double alpha = 1.0;
     int BlockNum_b = (d_dbsr.warpnum + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
-
+    printf("d_dbsr warpnum = %d\n", d_dbsr.warpnum);
+    printf("BlockNum_b:%d ThreadNum:%d\n", BlockNum_b, ThreadNum);
     get_rowIdxbyWarp<<<BlockNum, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.blc_row);
+    cudaDeviceSynchronize();
+    CHECK(cudaGetLastError());
+
     for (int i = 0; i < repeat; i++) {
         auto start = std::chrono::steady_clock::now();
         bsr_spmv_balanced_tc_fp64_dbsr<<<BlockNum_b, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
@@ -1151,6 +1165,14 @@ int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     cudaMemcpy(hY, dY, sizeof(double) * dbsr->row, cudaMemcpyDeviceToHost);
     CHECK(cudaGetLastError());
     cudaDeviceSynchronize();
+    cudaFree(dX);
+    cudaFree(dY);
+    cudaFree(d_dbsr.blcPtr);
+    cudaFree(d_dbsr.colIdx);
+    cudaFree(d_dbsr.blcVal);
+    cudaFree(d_dbsr.rowPtrbyWarp);
+    cudaFree(d_dbsr.rowIdxbyWarp);
+    // cudaFree(d_dbsr);
     return 0;
 }
 
@@ -1237,8 +1259,9 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     std::cout << "amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
     }
     cudaMemcpy(hY, dvecY, sizeof(MAT_VAL_TYPE) * bsrmat.row, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+
     cudaFree(dvecX);
     cudaFree(dvecY);
-    cudaDeviceSynchronize();
     return 0;
 }

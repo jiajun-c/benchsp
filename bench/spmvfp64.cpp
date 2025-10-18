@@ -22,7 +22,7 @@ struct triplet_matrix {
 };
 
 bool verify_res(double rtol, double atol, double *res, double *ref_res, int nnz) {
-    for (int i = 221; i < nnz; i++) {
+    for (int i = 0; i < nnz; i++) {
         double diff = fabsf(res[i] - ref_res[i]);
         double tol = atol + rtol * fabsf(ref_res[i]);
         if (diff > tol) {
@@ -139,17 +139,17 @@ int main(int argc, char **argv) {
     int *new_order = (int *)malloc(sizeof(int) * triplet.nrows);
 
     // AMGT
-    // amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
+    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
 
     // DBSR
     amgT_spmv_fp64_dbsr(&dbsr, x, cu_res, repeat); 
 
-    // // CSR SPMV
-    // spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
+    // CSR SPMV
+    spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
 
-    // // // DASP
-    // char filename[10];
-    // spmv_all(filename, vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
+    //  DASP
+    char filename[10];
+    spmv_all(filename, vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
 
     // double *dense_a;
     // dense_a = (double *)malloc(triplet.nrows * triplet.ncols * sizeof(double));

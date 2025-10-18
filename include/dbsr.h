@@ -27,7 +27,7 @@ void csrTodbsr(CSRFormat<double, int32_t> *csr, dbsrMat *bsr) {
 #ifdef BLOCK_INFO
     printf("row:%d col:%d nnz:%d brow:%d total_block:%d \n", row, col, csr->nnz, brow, total_block);
 #endif
-    printf("total_block: %d nnz:%d \n", total_block, csr->nnz);
+    printf("total_block: %d nnz:%d avg_nnz%f\n", total_block, csr->nnz, (double)csr->nnz/total_block);
     int *colIdx = (int *)malloc(block_len * block_len * sizeof(double) * total_block);
     memset(colIdx, 0, block_len * block_len * sizeof(double) * total_block);
     unsigned short *bmap = (unsigned short *)malloc(sizeof(unsigned short) * total_block);
