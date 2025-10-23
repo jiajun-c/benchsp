@@ -23,8 +23,9 @@ void ref_spmv_fp32(int *A_csrOffsets, int32_t *A_columns, float *A_values, float
     }
 }
 
-void ref_spmv_fp64(int64_t *A_csrOffsets, int64_t *A_columns, double *A_values, double *x, double* y, int64_t row, int64_t col) {
+void ref_spmv_fp64(int64_t *A_csrOffsets, int64_t *A_columns, double *A_values, double *x, double* y, int64_t row, int64_t col, double& avg_time) {
     int base = 0;
+    
     for (int64_t i = 0; i < row; i++) {
         double sum = 0;
         for (int64_t j = A_csrOffsets[i]; j < A_csrOffsets[i+1]; j++) {

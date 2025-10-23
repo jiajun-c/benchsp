@@ -240,7 +240,7 @@ void bcsr_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_valu
     bcsr.nnz = A_nnz;
 
     csrToBcsr<double, int64_t>(&csr, &bcsr);
-    printf("called\n");
+    // printf("called\n");
 
     // free(bcsr.values);
     // free(bcsr.bcsrcolIdx);

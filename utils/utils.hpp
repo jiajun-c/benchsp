@@ -14,7 +14,7 @@ void csrToBcsr(CSRFormat<T, Y>* csr, BCSRFormat<T, Y>* bcsr) {
     bcsr->blockNum = numColRegions * numRowRegions;
     bcsr->colRegions = numColRegions;
     bcsr->rowRegions = numRowRegions;
-    printf("blockNum: %lld\n",  bcsr->blockNum);
+    printf("blockNum: %d\n",  bcsr->blockNum);
     bcsr->row = csr->row;
     bcsr->col = csr->col;
 
@@ -31,7 +31,7 @@ void csrToBcsr(CSRFormat<T, Y>* csr, BCSRFormat<T, Y>* bcsr) {
             int64_t colRegion = col/bcsr->TILE_K;
             int64_t blockIndex = rowRegion * numColRegions + colRegion;
             if (blockIndex < 0 ||  blockIndex >= bcsr->blockNum) {
-                printf("%lld\n", blockIndex);
+                printf("%ld\n", blockIndex);
             }
             if (blockInfo_host[blockIndex] == 0) {
                 nonzeroBlocks += 1;

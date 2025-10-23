@@ -812,9 +812,9 @@ __global__ void dasp_spmv2(MAT_VAL_TYPE *dX_val, MAT_VAL_TYPE *dY_val,
 }
 
 void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, int *csrColIdxA, 
-                      MAT_VAL_TYPE *X_val, MAT_VAL_TYPE *Y_val, int *order_rid, int rowA, int colA, MAT_PTR_TYPE nnzA, int NUM, double threshold, int block_longest)
+                      MAT_VAL_TYPE *X_val, MAT_VAL_TYPE *Y_val, int *order_rid, int rowA, int colA, MAT_PTR_TYPE nnzA, int NUM, double threshold, int block_longest, double &avg_time)
 {
-    struct timeval t1, t2;
+    // struct timeval t1, t2;
 
     // three parts: short row (1 & 3 & 2 & 4), long row, row-block (regular（origin & fill0） & irregular)
     MAT_PTR_TYPE nnz_short, nnz_long, origin_nnz_reg, fill0_nnz_reg, nnz_irreg;
@@ -857,12 +857,14 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
             row_block ++;
         }
     }
+    printf("===dasp info===\n");
     printf("short_row_1:%d short_row_2:%d short_row_3:%d row_zero:%d short_row_4:%d row_long:%d row_block:%d\n", short_row_1, short_row_2, short_row_3, row_zero, short_row_4, row_long, row_block);
+    printf("===dasp end===\n\n");
     int rowloop;
     if (row_block < 59990) rowloop = 1;
     else if (row_block >= 59990 && row_block < 400000) rowloop = 2;
     else rowloop = 4;
-
+    rowloop = 1;
     int *short_rid_1 = (int *)malloc(sizeof(int) * short_row_1);
     int *short_rid_2 = (int *)malloc(sizeof(int) * short_row_2);
     int *short_rid_3 = (int *)malloc(sizeof(int) * short_row_3);
@@ -1537,6 +1539,7 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
     int offset_short22 = offset_short34 + threadblock34;
 
     int BlockNum_all = BlockNum_long + BlockNum + BlockNum_short;
+    printf("dasp: BlockNum_all %d BlockNum %d\n", BlockNum_all, BlockNum);
     int ThreadNum_all = 4 * WARP_SIZE;
 
     int sumBlockNum = (row_long + 3) / 4;
@@ -1610,13 +1613,12 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
     cudaFuncSetAttribute(dasp_spmv2<2>, cudaFuncAttributePreferredSharedMemoryCarveout, carveout);
     cudaFuncSetAttribute(dasp_spmv2<4>, cudaFuncAttributePreferredSharedMemoryCarveout, carveout);
 
-    // int warmup_time = 100;
-    int execute_time = 10;
+    int warmup_time = 100;
+    printf("roowloop: %d\n", rowloop);
     if (rowloop == 1)
     {
-        for (int i = 0; i < execute_time; ++i)
+        for (int i = 0; i < warmup_time; ++i)
         {    
-            auto start = std::chrono::high_resolution_clock::now(); 
             dasp_spmv2<1><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
                                                     dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
                                                     dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
@@ -1628,28 +1630,12 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
             if (row_long)
             longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
             cudaDeviceSynchronize();
-
-            auto end = std::chrono::high_resolution_clock::now(); 
-            auto elapsed = end - start;
-            std::cout << "dasp 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
-        
         }
-        // cudaDeviceSynchronize();
-        // if (row_long)
-        // {
-        //     for (int i = 0; i < execute_time; ++i)
-        //     {
-        //         longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
-        //     }
-        //     cudaDeviceSynchronize();
-        // }
-        // gettimeofday(&t2, NULL);
     }
     else if (rowloop == 2)
     {
-        for (int i = 0; i < execute_time; ++i)
+        for (int i = 0; i < warmup_time; ++i)
         {    
-            auto start = std::chrono::high_resolution_clock::now(); 
             dasp_spmv2<2><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
                                                     dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
                                                     dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
@@ -1660,28 +1646,73 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
             cudaDeviceSynchronize();
             if (row_long)
             longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
-                
-            auto end = std::chrono::high_resolution_clock::now(); 
-            auto elapsed = end - start;
-            std::cout << "dasp 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+                cudaDeviceSynchronize();
         
         }
-        // if (row_long)
-        // {
-        //     for (int i = 0; i < execute_time; ++i)
-        //     {
-        //         longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
-        //     }
-        //     cudaDeviceSynchronize();
-        // }
-        // gettimeofday(&t2, NULL);
+    }
+    else
+    {
+
+        for (int i = 0; i < warmup_time; ++i)
+        {    
+            dasp_spmv2<4><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
+                                                    dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
+                                                    dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
+                                                    dirreg_val, dirreg_cid, dirreg_rpt,
+                                                    dshort_val, dshort_cid, short_row_1, common_13, short_row_34, short_row_2, 
+                                                    offset_reg, offset_short1, offset_short13, offset_short34, offset_short22,
+                                                    fill0_nnz_short13, fill0_nnz_short34);
+            cudaDeviceSynchronize();
+            if (row_long)
+                longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
+            cudaDeviceSynchronize();
+        
+        }
+    }
+    
+    int execute_time = 10;
+    auto start = std::chrono::high_resolution_clock::now(); 
+
+    if (rowloop == 1)
+    {
+        for (int i = 0; i < execute_time; ++i)
+        {    
+            dasp_spmv2<1><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
+                                                    dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
+                                                    dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
+                                                    dirreg_val, dirreg_cid, dirreg_rpt,
+                                                    dshort_val, dshort_cid, short_row_1, common_13, short_row_34, short_row_2, 
+                                                    offset_reg, offset_short1, offset_short13, offset_short34, offset_short22,
+                                                    fill0_nnz_short13, fill0_nnz_short34);
+            cudaDeviceSynchronize();
+            if (row_long)
+            longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
+            cudaDeviceSynchronize();
+        }
+    }
+    else if (rowloop == 2)
+    {
+        for (int i = 0; i < execute_time; ++i)
+        {    
+            dasp_spmv2<2><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
+                                                    dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
+                                                    dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
+                                                    dirreg_val, dirreg_cid, dirreg_rpt,
+                                                    dshort_val, dshort_cid, short_row_1, common_13, short_row_34, short_row_2, 
+                                                    offset_reg, offset_short1, offset_short13, offset_short34, offset_short22,
+                                                    fill0_nnz_short13, fill0_nnz_short34);
+            cudaDeviceSynchronize();
+            if (row_long)
+            longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
+                cudaDeviceSynchronize();
+
+        }
     }
     else
     {
 
         for (int i = 0; i < execute_time; ++i)
         {    
-            auto start = std::chrono::high_resolution_clock::now(); 
             dasp_spmv2<4><<<BlockNum_all, ThreadNum_all>>>(dX_val, dY_val, 
                                                     dlong_val, dlong_cid, dval_by_warp, dlong_ptr_warp, row_long,
                                                     dreg_val, dreg_cid, dblock_ptr, row_block, blocknum, 
@@ -1694,24 +1725,12 @@ void spmv_all(char *filename, MAT_VAL_TYPE *csrValA, MAT_PTR_TYPE *csrRowPtrA, i
                 longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
             cudaDeviceSynchronize();
 
-            auto end = std::chrono::high_resolution_clock::now(); 
-            auto elapsed = end - start;
-            std::cout << "dasp 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
-        
         }
-        // cudaDeviceSynchronize();
-        // if (row_long)
-        // {
-        //     for (int i = 0; i < execute_time; ++i)
-        //     {
-        //         longPart_sum<<<sumBlockNum, ThreadNum_all>>>(dlong_ptr_warp, dval_by_warp, dY_val, row_long);
-        //     }
-        //     cudaDeviceSynchronize();
-        // }
-        // gettimeofday(&t2, NULL);
     }
     
-
+    auto end = std::chrono::high_resolution_clock::now(); 
+    auto elapsed = end - start;
+    avg_time = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / execute_time;
     // double dasp_time = ((t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0) / execute_time; 
     // double dasp_gflops = (double)((long)nnzA * 2) / (dasp_time * 1e6);
     // double dasp_bandwidth1 = (double)data_X / (dasp_time * 1e6);

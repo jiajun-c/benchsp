@@ -7,14 +7,15 @@
 #include <cuda/pipeline>
 #include <cooperative_groups/memcpy_async.h>
 #include "utils.h"
+#include "common.h"
 #define ADAPTIVE_AMGT_SPMV
 #define MASK_SIZE 256
 #define WARP_SIZE 32
 #define BSR_N 4
 #define BSR_M 4
 #define BSR_NNZ 16
-#define WARP_CAPACITY 64
-#define WARP_NUM_SPMV 4
+// #define WARP_CAPACITY 64
+// #define WARP_NUM_SPMV 4
 #define HYPRE_Real double
 #define setbit(x, y) x |= (1 << y)    // set the yth bit of x is 1
 #define clrbit(x, y) x &= ~(1 << y)   // set the yth bit of x is 0
@@ -50,6 +51,8 @@ __device__ __host__ int BinarySearch2(int *arr, int left, int right, int target)
     }
     return -1;
 }
+
+
 __device__ __forceinline__ void mma_m8n8k4(MAT_VAL_TYPE *acc, MAT_VAL_TYPE &frag_a, MAT_VAL_TYPE &frag_b)
 {
     asm volatile(
@@ -60,7 +63,24 @@ __device__ __forceinline__ void mma_m8n8k4(MAT_VAL_TYPE *acc, MAT_VAL_TYPE &frag
         " { %0, %1 };"
         : "+d"(acc[0]), "+d"(acc[1]) : "d"(frag_a), "d"(frag_b));
 }
+__device__ __forceinline__ void store_double_to_global(const double* a, double v)
+{
+    asm volatile("st.global.cs.f64 [%0], %1;" :: "l"(a), "d"(v));
+}
 
+__device__ __forceinline__ double load_double_from_global(const double* a)
+{
+    double r;
+    asm volatile("ld.global.cs.f64 %0, [%1];" : "=d"(r) : "l"(a));
+    return r;
+}
+
+__device__ __forceinline__ int load_int_from_global(const int* a)
+{
+    int r;
+    asm volatile("ld.global.cs.s32 %0, [%1];" : "=r"(r) : "l"(a));
+    return r;
+}
 __device__ __host__ int BinarySearch2_SpMV(int *arr, int left, int right, int target)
 {
     int low = left;
@@ -301,6 +321,73 @@ __global__ void bsr_spmv_cc_fp64(MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid,
     }
 }
 
+__global__ void dbsr_spmv_tow_level_balanced_tc_fp64(int*prefix, int warp_num,
+                                          MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid, MAT_VAL_TYPE *d_blcVal,
+                                          MAT_VAL_TYPE *d_x, MAT_VAL_TYPE *d_y, int blc_row, int blc_col, int row, int col,
+                                          MAT_VAL_TYPE alpha)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int warpid = tid >> 5;
+    int laneid = tid & (WARP_SIZE - 1);
+    // __shared__ MAT_VAL_TYPE sharedx[1625];
+    // for (int i = threadIdx.x; i < row; i += blockDim.x * gridDim.x) {
+    //     sharedx[i] = d_x[i];
+    // }
+    // // __syncthreads();
+    if (warpid >= warp_num)
+        return;
+
+    // int blc_rid = rowIdxbyWarp[warpid];
+
+    // int start = d_blcPtr[blc_rid] + (warpid - rowPtrbyWarp[blc_rid]) * WARP_CAPACITY;
+    // int end = start + WARP_CAPACITY < d_blcPtr[blc_rid + 1] ? start + WARP_CAPACITY : d_blcPtr[blc_rid + 1];
+    for (int j = prefix[warpid]; j < prefix[warpid+1]; j++) {
+        // if (laneid == 0)
+        // printf("prefix[warpid]:%d prefix[warpid+1]:%d\n", prefix[warpid], prefix[warpid+1]);
+        MAT_VAL_TYPE fragA, fragB, fragC[2] = {0};
+        int start = d_blcPtr[j];
+        int end = d_blcPtr[j + 1];
+        for (int i = start; i < end; i += 2)
+        { 
+            MAT_VAL_TYPE *cur_val = d_blcVal + i * BSR_NNZ;
+            fragA = (i + 1 >= end && laneid >= 16) ? 0 : cur_val[laneid];
+            MAT_IDX_TYPE *cur_idx = d_blcCid + i * BSR_NNZ ;
+            fragB = (i + 1 >= end && laneid >= 16) ? 0 : d_x[cur_idx[laneid]];
+            fragB = 1.0;
+            mma_m8n8k4(fragC, fragA, fragB);
+        }
+        fragC[0] += __shfl_down_sync(0xffffffff, fragC[0], 18, 32);
+        fragC[1] += __shfl_down_sync(0xffffffff, fragC[1], 18, 32);
+        if (laneid == 0)
+        {
+            int rowid = j * 4 ;
+            if (rowid < row) {
+                atomicAdd(&d_y[rowid], fragC[0] * alpha);
+            }
+        }
+        if (laneid == 4)
+        {
+            int rowid = j * 4 + 1;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[1] * alpha);
+        }
+        if (laneid == 9)
+        {
+            int rowid = j * 4 + 2;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[0] * alpha);
+        }
+        if (laneid == 13)
+        {
+            int rowid = j * 4 + 3;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[1] * alpha);
+        }
+    }
+}
+
+
+
 __global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyWarp, int warp_num,
                                           MAT_PTR_TYPE *d_blcPtr, MAT_IDX_TYPE *d_blcCid, MAT_VAL_TYPE *d_blcVal,
                                           MAT_VAL_TYPE *d_x, MAT_VAL_TYPE *d_y, int blc_row, int blc_col, int row, int col,
@@ -309,7 +396,11 @@ __global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyW
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int warpid = tid >> 5;
     int laneid = tid & (WARP_SIZE - 1);
-
+    // __shared__ MAT_VAL_TYPE sharedx[1625];
+    // for (int i = threadIdx.x; i < row; i += blockDim.x * gridDim.x) {
+    //     sharedx[i] = d_x[i];
+    // }
+    // // __syncthreads();
     if (warpid >= warp_num)
         return;
 
@@ -317,54 +408,56 @@ __global__ void bsr_spmv_balanced_tc_fp64_dbsr(int *rowPtrbyWarp, int *rowIdxbyW
 
     int start = d_blcPtr[blc_rid] + (warpid - rowPtrbyWarp[blc_rid]) * WARP_CAPACITY;
     int end = start + WARP_CAPACITY < d_blcPtr[blc_rid + 1] ? start + WARP_CAPACITY : d_blcPtr[blc_rid + 1];
-
     MAT_VAL_TYPE fragA, fragB, fragC[2] = {0};
+
     for (int i = start; i < end; i += 2)
     {
         MAT_VAL_TYPE *cur_val = d_blcVal + i * BSR_NNZ;
         fragA = (i + 1 >= end && laneid >= 16) ? 0 : cur_val[laneid];
         MAT_IDX_TYPE *cur_idx = d_blcCid + i * BSR_NNZ ;
-        // if (i+1< end) {
-        //     if (cur_idx[laneid] < 0) {
-        //         printf("err\n");
-        //     }
-        // }
-        // fragA = 1.0;
+            // if (i+1< end) {
+            //     if (cur_idx[laneid] < 0) {
+            //         printf("err\n");
+            //     }
+            // }
+            // fragA = 1.0;
         fragB = (i + 1 >= end && laneid >= 16) ? 0 : d_x[cur_idx[laneid]];
         fragB = 1.0;
         mma_m8n8k4(fragC, fragA, fragB);
     }
-
+        // start += 131072;
+        // end += 131072;
     fragC[0] += __shfl_down_sync(0xffffffff, fragC[0], 18, 32);
     fragC[1] += __shfl_down_sync(0xffffffff, fragC[1], 18, 32);
     // if (blc_rid*4 >= 220) {
     //     printf("err\n");
     // }
-    if (laneid == 0)
-    {
-        int rowid = blc_rid * 4;
-        if (rowid < row) {
-            atomicAdd(&d_y[rowid], fragC[0] * alpha);
+
+        if (laneid == 0)
+        {
+            int rowid = blc_rid * 4 ;
+            if (rowid < row) {
+                atomicAdd(&d_y[rowid], fragC[0] * alpha);
+            }
         }
-    }
-    if (laneid == 4)
-    {
-        int rowid = blc_rid * 4 + 1;
-        if (rowid < row)
-            atomicAdd(&d_y[rowid], fragC[1] * alpha);
-    }
-    if (laneid == 9)
-    {
-        int rowid = blc_rid * 4 + 2;
-        if (rowid < row)
-            atomicAdd(&d_y[rowid], fragC[0] * alpha);
-    }
-    if (laneid == 13)
-    {
-        int rowid = blc_rid * 4 + 3;
-        if (rowid < row)
-            atomicAdd(&d_y[rowid], fragC[1] * alpha);
-    }
+        if (laneid == 4)
+        {
+            int rowid = blc_rid * 4 + 1 ;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[1] * alpha);
+        }
+        if (laneid == 9)
+        {
+            int rowid = blc_rid * 4 + 2;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[0] * alpha);
+        }
+        if (laneid == 13)
+        {
+            int rowid = blc_rid * 4 + 3;
+            if (rowid < row)
+                atomicAdd(&d_y[rowid], fragC[1] * alpha);
+        }
 }
 
 
@@ -1080,13 +1173,12 @@ void CSR2BSR_GPU(bsrMAT *bsrmat, int32_t *hA_csrOffsets, int32_t *hA_columns, do
 
 void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
 {
-    // bsrmat->stand = 12;
+    bsrmat->stand = 12;
 #ifdef ADAPTIVE_AMGT_SPMV
     if (bsrmat->stand >= 12)
 #endif
     {
         // load balanced preprocess
-        printf("load balanced preprocess\n");
         cudaMalloc((void **)&bsrmat->rowPtrbyWarp, sizeof(MAT_PTR_TYPE) * (bsrmat->blc_row + 1));
         cudaMemset(bsrmat->rowPtrbyWarp, 0, sizeof(MAT_PTR_TYPE) * (bsrmat->blc_row + 1));
 
@@ -1107,7 +1199,85 @@ void BSR_BALANCED_PREPROCESS_GPU(bsrMAT *bsrmat)
     }
 }
 
-int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
+int amgT_spmv_fp64_dbsr_balance(dbsrMat *dbsr, double *hX, double *hY,int32_t warmup, int32_t repeat, double &avg_time) {
+    dbsrMat d_dbsr;
+    double *dX, *dY;
+    d_dbsr.col = dbsr->col;
+    d_dbsr.row = dbsr->row;
+    d_dbsr.warpnum = dbsr->warpnum;
+    // printf("dbsr:warpnum:%d \n",d_dbsr.warpnum);
+    // for (int i = 0; i < 2; i++) {
+    //     printf("%d\n", dbsr->prefix[i]);
+    // }
+    // d_dbsr.nn
+    cudaMalloc((void **)&d_dbsr.prefix, (d_dbsr.warpnum+1) *sizeof(int));
+    cudaMalloc((void **)&dX, sizeof(double) * dbsr->col);
+    cudaMalloc((void **)&dY, sizeof(double) * dbsr->row);
+    cudaMalloc((void **)&d_dbsr.blcPtr, sizeof(int) * (dbsr->blc_row + 1));
+    cudaMalloc((void **)&d_dbsr.colIdx, sizeof(int) * dbsr->blocknnz);
+    cudaMalloc((void **)&d_dbsr.blcVal, sizeof(double) * dbsr->blocknnz);
+    cudaMemcpy(d_dbsr.blcPtr, dbsr->blcPtr, sizeof(int) * (dbsr->blc_row + 1), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dbsr.colIdx, dbsr->colIdx, sizeof(int) * dbsr->blocknnz, cudaMemcpyHostToDevice);
+    // for (int i = 0; i < dbsr->blocknnz; i++) {
+    //     if (dbsr->colIdx[i] >= 5300) {
+    //         printf("colIdx[%d] = %d\n", i, dbsr->colIdx[i]);
+    //     }
+    // }
+
+    cudaMemcpy(d_dbsr.prefix, dbsr->prefix, (dbsr->warpnum+1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dbsr.blcVal, dbsr->blcVal, sizeof(double) * dbsr->blocknnz, cudaMemcpyHostToDevice);
+    cudaMemcpy(dX, hX, sizeof(double) * dbsr->col, cudaMemcpyHostToDevice);
+    cudaMemcpy(dY, hY, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
+
+    d_dbsr.blc_row = dbsr->blc_row;
+    cudaMalloc((void **)&d_dbsr.rowPtrbyWarp, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
+    cudaMemset(d_dbsr.rowPtrbyWarp, 0, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
+    int ThreadNum = WARP_SIZE * WARP_NUM_SPMV;
+    // int BlockNum = (d_dbsr.blc_row + ThreadNum - 1) / ThreadNum;
+    // printf("dbsr: BlockNum:%d ThreadNum:%d\n", BlockNum, ThreadNum);
+    // get_rowPtrbyWarp<<<BlockNum, ThreadNum>>>(d_dbsr.blcPtr, d_dbsr.rowPtrbyWarp, d_dbsr.blc_row);
+    // cudaDeviceSynchronize();
+    // thrust::exclusive_scan(thrust::device, d_dbsr.rowPtrbyWarp, d_dbsr.rowPtrbyWarp + d_dbsr.blc_row + 1, d_dbsr.rowPtrbyWarp, 0);
+    // cudaDeviceSynchronize();
+
+    // cudaMemcpy(&d_dbsr.warpnum, (d_dbsr.rowPtrbyWarp) + d_dbsr.blc_row, sizeof(MAT_PTR_TYPE), cudaMemcpyDeviceToHost);
+
+    // cudaMalloc((void **)&d_dbsr.rowIdxbyWarp, sizeof(int) * d_dbsr.warpnum);
+    double alpha = 1.0;
+    int BlockNum_b = (d_dbsr.warpnum + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
+    CHECK(cudaGetLastError());
+    for (int i = 0; i < warmup; i++) {
+        dbsr_spmv_tow_level_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(d_dbsr.prefix, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
+        
+        cudaDeviceSynchronize();
+
+    }
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < repeat; i++) {
+        dbsr_spmv_tow_level_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(d_dbsr.prefix, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
+        
+        cudaDeviceSynchronize();
+
+    }
+    auto end = std::chrono::steady_clock::now();
+    auto elapsed = end - start;
+        // std::cout << "dbsr amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+    avg_time = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / repeat;
+    cudaMemcpy(hY, dY, sizeof(double) * dbsr->row, cudaMemcpyDeviceToHost);
+    CHECK(cudaGetLastError());
+    cudaDeviceSynchronize();
+    cudaFree(dX);
+    cudaFree(dY);
+    cudaFree(d_dbsr.blcPtr);
+    cudaFree(d_dbsr.colIdx);
+    cudaFree(d_dbsr.blcVal);
+    cudaFree(d_dbsr.rowPtrbyWarp);
+    cudaFree(d_dbsr.rowIdxbyWarp);
+    // cudaFree(d_dbsr);
+    return 0;
+}
+
+int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY,int32_t warmup, int32_t repeat, double &avg_time) {
     dbsrMat d_dbsr;
     double *dX, *dY;
     d_dbsr.col = dbsr->col;
@@ -1131,7 +1301,6 @@ int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     cudaMemcpy(dY, hY, sizeof(double) * dbsr->row, cudaMemcpyHostToDevice);
 
     d_dbsr.blc_row = dbsr->blc_row;
-    printf("load balanced preprocess\n");
     cudaMalloc((void **)&d_dbsr.rowPtrbyWarp, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
     cudaMemset(d_dbsr.rowPtrbyWarp, 0, sizeof(MAT_PTR_TYPE) * (d_dbsr.blc_row + 1));
     int ThreadNum = WARP_SIZE * WARP_NUM_SPMV;
@@ -1147,21 +1316,28 @@ int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     cudaMalloc((void **)&d_dbsr.rowIdxbyWarp, sizeof(int) * d_dbsr.warpnum);
     double alpha = 1.0;
     int BlockNum_b = (d_dbsr.warpnum + WARP_NUM_SPMV - 1) / WARP_NUM_SPMV;
-    printf("d_dbsr warpnum = %d\n", d_dbsr.warpnum);
-    printf("BlockNum_b:%d ThreadNum:%d\n", BlockNum_b, ThreadNum);
+    // printf("d_dbsr warpnum = %d\n", d_dbsr.warpnum);
+    printf("dbsr: BlockNum_b:%d ThreadNum:%d\n", BlockNum_b, ThreadNum);
     get_rowIdxbyWarp<<<BlockNum, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.blc_row);
     cudaDeviceSynchronize();
     CHECK(cudaGetLastError());
-
-    for (int i = 0; i < repeat; i++) {
-        auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < warmup; i++) {
         bsr_spmv_balanced_tc_fp64_dbsr<<<BlockNum_b, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
         
         cudaDeviceSynchronize();
-        auto end = std::chrono::steady_clock::now();
-        auto elapsed = end - start;
-        std::cout << "dbsr amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+
     }
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < repeat; i++) {
+        bsr_spmv_balanced_tc_fp64_dbsr<<<BlockNum_b, ThreadNum>>>(d_dbsr.rowPtrbyWarp, d_dbsr.rowIdxbyWarp, d_dbsr.warpnum, d_dbsr.blcPtr, d_dbsr.colIdx, d_dbsr.blcVal, dX, dY,d_dbsr.blc_row, d_dbsr.blc_col, d_dbsr.row,d_dbsr.col, alpha);
+        
+        cudaDeviceSynchronize();
+
+    }
+    auto end = std::chrono::steady_clock::now();
+    auto elapsed = end - start;
+        // std::cout << "dbsr amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+    avg_time = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / repeat;
     cudaMemcpy(hY, dY, sizeof(double) * dbsr->row, cudaMemcpyDeviceToHost);
     CHECK(cudaGetLastError());
     cudaDeviceSynchronize();
@@ -1176,10 +1352,10 @@ int amgT_spmv_fp64_dbsr(dbsrMat *dbsr, double *hX, double *hY, int32_t repeat) {
     return 0;
 }
 
-int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_values, double *hX, double* hY, int32_t A_num_rows, int32_t A_num_cols, int32_t A_nnz, int repeat)
+int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_values, double *hX, double* hY, int32_t A_num_rows, int32_t A_num_cols, int32_t A_nnz, int repeat, double& avg_time)
 {
     bsrMAT bsrmat;
-    printf("=== block matrix info ====\n");
+    printf("===amgT block matrix info ====\n");
 
     CSR2BSR_GPU(&bsrmat, hA_csrOffsets, hA_columns, hA_values, hX, hY, A_num_rows, A_num_cols, A_nnz);
     BSR_BALANCED_PREPROCESS_GPU(&bsrmat);
@@ -1211,57 +1387,103 @@ int amgT_spmv_fp64(int32_t *hA_csrOffsets, int32_t *hA_columns, double *hA_value
     printf("blc_row = %d\n", bsrmat.blc_row);
     printf("blc_col = %d\n", bsrmat.blc_col);
     printf("blc_num = %d\n", bsrmat.blc_num);
-    printf("=== block matrix end ====\n");
+    printf("=== block matrix end ====\n\n");
+    int warmup = 5;
+    for (int i = 0; i < warmup; i++) {
+    #ifdef ADAPTIVE_AMGT_SPMV
+        if (stand >= 12 && avgnz >= 10)
+        {
+            // ===tensor core, balanced===
+            bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr,bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY,bsrmat.blc_row, bsrmat.blc_col, bsrmat.row,bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else if (stand >= 12 && avgnz < 10)
+        {
+            // ===cuda core, balanced===
+            bsr_spmv_balanced_cc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else if (stand < 12 && avgnz >= 10)
+        {
+            // ===tensor core===
+            // printf("===tensor core===\n");
+            bsr_spmv_tc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col,bsrmat.row, bsrmat.col, alpha);
+            // bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else
+        {
+            // ===cuda core===
+            bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+    #else
+        printf("===tensor core, balanced===\n");
+        bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+    #endif
+        cudaDeviceSynchronize();
+    }
+    auto start = std::chrono::steady_clock::now();
 
     for (int i = 0; i < repeat; i++) {
-    auto start = std::chrono::steady_clock::now();
-    // stand = 12;
-#ifdef ADAPTIVE_AMGT_SPMV
-    if (stand >= 12 && avgnz >= 10)
-    {
-        // ===tensor core, balanced===
-        bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr,bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY,bsrmat.blc_row, bsrmat.blc_col, bsrmat.row,bsrmat.col, alpha);
-        cudaDeviceSynchronize();
-        // ===============================
-    }
-    else if (stand >= 12 && avgnz < 10)
-    {
-        // ===cuda core, balanced===
-        bsr_spmv_balanced_cc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
-        cudaDeviceSynchronize();
-        // ===============================
-    }
-    else if (stand < 12 && avgnz >= 10)
-    {
-        // ===tensor core===
-        // printf("===tensor core===\n");
-        bsr_spmv_tc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col,bsrmat.row, bsrmat.col, alpha);
-        // bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+        // stand = 12;
+    #ifdef ADAPTIVE_AMGT_SPMV
+        if (stand >= 12 && avgnz >= 10)
+        {
+            // ===tensor core, balanced===
+            bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr,bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY,bsrmat.blc_row, bsrmat.blc_col, bsrmat.row,bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else if (stand >= 12 && avgnz < 10)
+        {
+            // ===cuda core, balanced===
+            bsr_spmv_balanced_cc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else if (stand < 12 && avgnz >= 10)
+        {
+            // ===tensor core===
+            // printf("===tensor core===\n");
+            bsr_spmv_tc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col,bsrmat.row, bsrmat.col, alpha);
+            // bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
 
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+        else
+        {
+            // ===cuda core===
+            bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+            cudaDeviceSynchronize();
+            // ===============================
+        }
+    #else
+        printf("===tensor core, balanced===\n");
+        bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
+    #endif
         cudaDeviceSynchronize();
-        // ===============================
     }
-    else
-    {
-        // ===cuda core===
-        bsr_spmv_cc_fp64<<<BlockNum, ThreadNum>>>(bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcMap, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row,bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
-        cudaDeviceSynchronize();
-        // ===============================
-    }
-
-#else
-    printf("===tensor core, balanced===\n");
-    bsr_spmv_balanced_tc_fp64<<<BlockNum_b, ThreadNum>>>(bsrmat.rowPtrbyWarp, bsrmat.rowIdxbyWarp, bsrmat.warpnum, bsrmat.blcPtr, bsrmat.blcIdx, bsrmat.blcVal, dvecX, dvecY, bsrmat.blc_row, bsrmat.blc_col, bsrmat.row, bsrmat.col, alpha);
-#endif
-    cudaDeviceSynchronize();
     auto end = std::chrono::steady_clock::now();
     auto elapsed = end - start;
-    std::cout << "amgT 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
-    }
+    avg_time =  std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()/repeat;
+    std::cout << "amgT avg 耗时: " << avg_time << " us\n";
     cudaMemcpy(hY, dvecY, sizeof(MAT_VAL_TYPE) * bsrmat.row, cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
 
     cudaFree(dvecX);
     cudaFree(dvecY);
+    cudaFree(bsrmat.rowPtrbyWarp);
+    cudaFree(bsrmat.rowIdxbyWarp);
+    cudaFree(bsrmat.blcPtr);
+    cudaFree(bsrmat.blcIdx);
+    cudaFree(bsrmat.blcMap);
+    cudaFree(bsrmat.blcVal);
     return 0;
 }

@@ -101,4 +101,6 @@ class dbsrMat {
         int32_t warpnum;       // load-balanced value
         int32_t *rowPtrbyWarp; // load-balanced array
         int32_t *rowIdxbyWarp; // load-balanced array
+        int32_t *recorderMap;
+        int32_t *prefix;
 };

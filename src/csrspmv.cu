@@ -18,7 +18,24 @@ using namespace std;
 #define WARPS_PER_BLOCK 4
 #define THREADS_PER_BLOCK 128 
 #define WARP_CAPACITY 16    
+__device__ __forceinline__ void store_double_to_global(const double* a, double v)
+{
+    asm volatile("st.global.cs.f64 [%0], %1;" :: "l"(a), "d"(v));
+}
 
+__device__ __forceinline__ double load_double_from_global(const double* a)
+{
+    double r;
+    asm volatile("ld.global.cs.f64 %0, [%1];" : "=d"(r) : "l"(a));
+    return r;
+}
+
+__device__ __forceinline__ int load_int_from_global(const int* a)
+{
+    int r;
+    asm volatile("ld.global.cs.s32 %0, [%1];" : "=r"(r) : "l"(a));
+    return r;
+}
 __global__ void spmv_fp64(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t nnz, double* values,double* x, double* outvalues) { 
     int32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= rows) return;
@@ -27,14 +44,16 @@ __global__ void spmv_fp64(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_
     // }
     double tmp = 0.0;
     int count = rowPtr[tid+1] - rowPtr[tid];
-    if (count > 32) return;
+    // if (count > 32) return;
+    #pragma unroll
     for (int32_t i = rowPtr[tid]; i < rowPtr[tid+1]; i++) {
         int32_t col = colIdx[i];
         double val = values[i];
-        double xval = x[col];
+        double xval = load_double_from_global(&x[col]);
         tmp += xval * val;
     }
-    outvalues[tid] = tmp;
+    store_double_to_global(&outvalues[tid], tmp);
+    // outvalues[tid] = tmp;
 }
 
 __global__ void get_rowPtrbyWarp_csr(int *d_blcPtr, int *rowPtrbyWarp, int blc_row)
@@ -74,7 +93,7 @@ __global__ void spmv_fp64_balance(int32_t* rowPtr, int32_t *rowPtrbyWarp, int32_
     double res = 0;
     // printf("start:%d end:%d target_row_id:%d tid:%d\n",  rowPtrbyWarp[target_row_id],  rowPtrbyWarp[target_row_id+1], target_row_id, tid);
     // printf("start:%d end:%d\n", start, end );
-    #pragma unroll
+    #pragma unroll 4
     for (int i = start; i < end; i++) {
         // printf("%d\n", i);
         res += values[i] * x[colIdx[i]];
@@ -82,7 +101,8 @@ __global__ void spmv_fp64_balance(int32_t* rowPtr, int32_t *rowPtrbyWarp, int32_
     atomicAdd(&d_y[target_row_id],res);
 }
 
-int spmv_fp64_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t cols, int32_t nnz, double* values,double* x, double* outvalues, int repeat) {    double *d_values, *d_x, *d_outvalues;
+int spmv_fp64_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t cols, int32_t nnz, double* values,double* x, double* outvalues, int repeat, double& avg_time) {  
+    double *d_values, *d_x, *d_outvalues;
     cudaMalloc((void**)&d_values, sizeof(double)*nnz);
     cudaMalloc((void**)&d_x, sizeof(double)*cols);
     cudaMalloc((void**)&d_outvalues, sizeof(double)*rows);
@@ -96,19 +116,24 @@ int spmv_fp64_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t co
     cudaMemcpy(d_colIdx, colIdx, sizeof(int32_t)*nnz, cudaMemcpyHostToDevice);
     int threadsNum = 4*WARP;
     int blocksNum = (rows+threadsNum-1)/threadsNum;
-    for (int i = 0; i < repeat; i++) {
-        auto start = chrono::high_resolution_clock::now();
+    for (int i = 0; i < 10; i++) {
         spmv_fp64<<<blocksNum, threadsNum>>>(d_rowPtr, d_colIdx, rows, nnz, d_values, d_x, d_outvalues);
         cudaDeviceSynchronize();
-        auto end = chrono::high_resolution_clock::now();
-        auto eplapsed = end - start;
-        std::cout << "csr spmv time: " << chrono::duration_cast<chrono::microseconds>(eplapsed).count() << "us" << std::endl;
     }
+    auto start = chrono::high_resolution_clock::now();
+    for (int i = 0; i < repeat; i++) {
+        spmv_fp64<<<blocksNum, threadsNum>>>(d_rowPtr, d_colIdx, rows, nnz, d_values, d_x, d_outvalues);
+        cudaDeviceSynchronize();
+    }
+    auto end = chrono::high_resolution_clock::now();
+    auto eplapsed = end - start;
+    avg_time = chrono::duration_cast<chrono::microseconds>(eplapsed).count()/ repeat;
+
     cudaMemcpy(outvalues, d_outvalues, sizeof(double)*rows, cudaMemcpyDeviceToHost);
     return 0;
 }
 
-int spmv_fp64_balance_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t cols, int32_t nnz, double* values,double* x, double* outvalues, int repeat) {  
+int spmv_fp64_balance_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, int32_t cols, int32_t nnz, double* values,double* x, double* outvalues, int repeat, double& avg_time) {  
     double *d_values, *d_x, *d_outvalues;
     cudaMalloc((void**)&d_values, sizeof(double)*nnz);
     cudaMalloc((void**)&d_x, sizeof(double)*cols);
@@ -142,15 +167,22 @@ int spmv_fp64_balance_warpper(int32_t *rowPtr, int32_t *colIdx, int32_t rows, in
     // printf("warpnum: %d threadsNum:%d blocksNum:%d\n", warpnum, threadsNum, blocksNum);
             CHECK(cudaGetLastError());
         cudaDeviceSynchronize();
-    for (int i = 0; i < repeat; i++) {
-        auto start = chrono::high_resolution_clock::now();
+    int warmup = 10;
+    for (int i = 0; i < warmup; i++) {
         spmv_fp64_balance<<<blocksNum, threadsNum>>>(d_rowPtr, rowPtrbyWarp, d_colIdx, rowIdxbyWarp, rows, nnz, warpnum, d_values, d_x, d_outvalues);
         CHECK(cudaGetLastError());
         cudaDeviceSynchronize();
-        auto end = chrono::high_resolution_clock::now();
-        auto eplapsed = end - start;
-        std::cout << "csr spmv time: " << chrono::duration_cast<chrono::microseconds>(eplapsed).count() << "us" << std::endl;
     }
+    auto start = chrono::high_resolution_clock::now();
+    for (int i = 0; i < repeat; i++) {
+        spmv_fp64_balance<<<blocksNum, threadsNum>>>(d_rowPtr, rowPtrbyWarp, d_colIdx, rowIdxbyWarp, rows, nnz, warpnum, d_values, d_x, d_outvalues);
+        CHECK(cudaGetLastError());
+        cudaDeviceSynchronize();
+
+    }
+    auto end = chrono::high_resolution_clock::now();
+    auto eplapsed = end - start;
+    avg_time = chrono::duration_cast<chrono::microseconds>(eplapsed).count() / repeat;
     cudaMemcpy(outvalues, d_outvalues, sizeof(double)*rows, cudaMemcpyDeviceToHost);
     cudaFree(rowPtrbyWarp);
     cudaFree(rowIdxbyWarp);

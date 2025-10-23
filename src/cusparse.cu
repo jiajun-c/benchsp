@@ -101,7 +101,7 @@ int cusparse_spmv(int *hA_csrOffsets, int64_t *hA_columns, float *hA_values, flo
     return 0;
 }
 
-int cusparse_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_values, double *hX, double* hY, int64_t A_num_rows, int64_t A_num_cols, int64_t A_nnz, int repeat) {
+int cusparse_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_values, double *hX, double* hY, int64_t A_num_rows, int64_t A_num_cols, int64_t A_nnz, int repeat, double &avg_time) {
     double     alpha           = 1.0f;
     double     beta            = 0.0f;
     int64_t   *dA_csrOffsets, *dA_columns;
@@ -147,8 +147,8 @@ int cusparse_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_v
                                  &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
                                  CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize) )
     CHECK_CUDA( cudaMalloc(&dBuffer, bufferSize) )
-    for (int i = 0; i < repeat; i++) {
-        auto start = std::chrono::high_resolution_clock::now(); 
+    int warmup = 10;
+    for (int i = 0; i < warmup; i++) {
 
         // execute preprocess (optional)
         // CHECK_CUSPARSE( cusparseSpMV_preprocess(
@@ -162,10 +162,29 @@ int cusparse_spmv_fp64(int64_t *hA_csrOffsets, int64_t *hA_columns, double *hA_v
                                     &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
                                     CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
         cudaDeviceSynchronize();
-        auto end = std::chrono::high_resolution_clock::now(); 
-        auto elapsed = end - start;
-        std::cout << "cusparse 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
+
     }
+        auto start = std::chrono::high_resolution_clock::now(); 
+    for (int i = 0; i < repeat; i++) {
+
+        // execute preprocess (optional)
+        // CHECK_CUSPARSE( cusparseSpMV_preprocess(
+        //                              handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+        //                              &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
+        //                              CUSPARSE_SPMV_ALG_DEFAULT, dBuffer) )
+
+        // execute SpMV
+        // CHECK_CUSPARSE( 
+        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
+                                    CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
+        cudaDeviceSynchronize();
+
+    }
+    auto end = std::chrono::high_resolution_clock::now(); 
+    auto elapsed = end - start;
+    avg_time = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / repeat;
+// std::cout << "cusparse 耗时: " << std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() << " us\n";
     // destroy matrix/vector descriptors
     CHECK_CUSPARSE( cusparseDestroySpMat(matA) )
     CHECK_CUSPARSE( cusparseDestroyDnVec(vecX) )

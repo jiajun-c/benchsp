@@ -1,2 +1,2 @@
 void spmv_all(char *filename, double *csrValA, int *csrRowPtrA, int *csrColIdxA, 
-                      double *X_val, double *Y_val, int *order_rid, int rowA, int colA, int nnzA, int NUM, double threshold, int block_longest);
+                      double *X_val, double *Y_val, int *order_rid, int rowA, int colA, int nnzA, int NUM, double threshold, int block_longest, double &avg_time);

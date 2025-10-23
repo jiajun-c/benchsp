@@ -91,8 +91,7 @@ int main(int argc, char **argv) {
     csr.rowPtr = counts;
     csr.colIdx = triplet.cols.data();
     csr.values = triplet.vals.data();
-    dbsrMat dbsr;
-    csrTodbsr(&csr, &dbsr);
+
     double *x = (double *)malloc(triplet.nrows * sizeof(double));
     for (int i = 0;i  < triplet.nrows; i++) {
         if (i%4) {
@@ -124,12 +123,16 @@ int main(int argc, char **argv) {
     int64_t* cols64 = (int64_t *)malloc(nnz * sizeof(int64_t));
     for (int i = 0; i < nnz; i++) cols64[i] = triplet.cols[i];
     for (int i = 0; i <= triplet.nrows; i++) count64[i] = counts[i];
-    // ref_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols);
+
+    double spmv_fp64_avg_time;
+    // spmv_fp64_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz, vals, x, ref_res, repeat, spmv_fp64_avg_time);
+    // ref_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, ref_spmv_avg_time);
     // double *ref_cures;
     // cudaMalloc((void**)&ref_cures, triplet.nrows * sizeof(double));
     // cudaMemset(ref_cures, 0.0,  triplet.nrows * sizeof(double));
     // for (int i = 0; i < 1; i++)
-    cusparse_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, nnz, repeat);
+    double cusparse_avg_time;
+    cusparse_spmv_fp64(count64, cols64, vals, x, ref_res, triplet.nrows, triplet.ncols, nnz, repeat, cusparse_avg_time);
     // cudaMemcpy(ref_res, ref_cures, triplet.nrows * sizeof(double), cudaMemcpyDeviceToHost);
     // auto end = std::chrono::high_resolution_clock::now(); 
     // auto elapsed = end - start;
@@ -138,19 +141,41 @@ int main(int argc, char **argv) {
     // printf("amgT spmv\n");
     int *new_order = (int *)malloc(sizeof(int) * triplet.nrows);
 
+
     // AMGT
-    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat);
-
+    double amg_avg_time;
+    // CSRFormat<double, int32_t> recsr;
+    // // csrRecorderSelf(&csr, &);
+    amgT_spmv_fp64(counts, cols, vals, x, cu_res, triplet.nrows, triplet.ncols, nnz, repeat, amg_avg_time);
+    // // printf("amgT avg time: %.2f us\n", amg_avg_time);
     // DBSR
-    amgT_spmv_fp64_dbsr(&dbsr, x, cu_res, repeat); 
+    // dbsrMat dbsr;
+    dbsrMat dbsr_recorder;
+    csrTodbsrWithRecorder(&csr, &dbsr_recorder);
+    printf("dbsr_recorder.warpnum: %d\n", dbsr_recorder.warpnum);
+    // csrTodbsr(&csr, &dbsr);
 
+    double dbsr_avg_time;   
+    int warmup = 0;
+    // amgT_spmv_fp64_dbsr(&dbsr_recorder, x, cu_res,warmup, repeat, dbsr_avg_time); 
+    amgT_spmv_fp64_dbsr_balance(&dbsr_recorder, x, cu_res,warmup, repeat, dbsr_avg_time);
+    double* cu_res_recorder = (double *)malloc(triplet.nrows * sizeof(double));
+    for (int i = 0; i < triplet.nrows; i++) {
+        cu_res_recorder[dbsr_recorder.recorderMap[i]] = cu_res[i];
+
+    }
+    // printf("dbsr avg time: %.2f us\n", dbsr_avg_time);
     // CSR SPMV
-    spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat);
+    double csr_spmv_avg_time;
+    spmv_fp64_balance_warpper(counts, cols, triplet.nrows, triplet.ncols, nnz,  vals, x, cu_res, repeat, csr_spmv_avg_time);
+    // printf("spmv_fp64_balance avg time: %.2f us\n", csr_spmv_avg_time);
 
     //  DASP
     char filename[10];
-    spmv_all(filename, vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256);
 
+    double dasp_avg_time;
+    spmv_all(filename, vals, counts, cols, x, cu_res, new_order, triplet.nrows, triplet.ncols, nnz, 4, 0.75, 256, dasp_avg_time);
+    // printf("dasp avg time: %.2f us\n", dasp_avg_time);
     // double *dense_a;
     // dense_a = (double *)malloc(triplet.nrows * triplet.ncols * sizeof(double));
     // memset(dense_a, 0, triplet.nrows * triplet.ncols * sizeof(double));
@@ -158,7 +183,16 @@ int main(int argc, char **argv) {
     //     dense_a[triplet.rows[i] * triplet.ncols + triplet.cols[i]] = triplet.vals[i];
     // }
     // gemvfp64(dense_a, x, cu_res, triplet.nrows, triplet.ncols, 1, repeat);
-    if (verify_res(1e-3, 1e-3, cu_res,ref_res, triplet.nrows)) {
+    printf("===benchmark fp64 summary===\n");
+    printf("method              time     speedup\n");
+    printf("cusparse         : %.2f us   %.2fx\n", cusparse_avg_time, 1.0);
+    printf("dbsr             : %.2f us   %.2fx\n", dbsr_avg_time, cusparse_avg_time/dbsr_avg_time);
+    printf("amgT             : %.2f us   %.2fx\n", amg_avg_time, cusparse_avg_time/amg_avg_time);
+    printf("csr_spmv_balance : %.2f us   %.2fx\n", csr_spmv_avg_time, cusparse_avg_time/csr_spmv_avg_time);
+    printf("csr_spmv         : %.2f us   %.2fx\n", spmv_fp64_avg_time, cusparse_avg_time/spmv_fp64_avg_time);
+    printf("dasp             : %.2f us   %.2fx\n", dasp_avg_time, cusparse_avg_time/dasp_avg_time);
+
+    if (verify_res(1e-3, 1e-3, cu_res_recorder,ref_res, triplet.nrows)) {
         printf("PASS\n");
     } else {
         printf("FAIL\n");
